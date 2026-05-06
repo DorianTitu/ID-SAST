@@ -1,3 +1,15 @@
+# Node.js
+node_modules/
+npm-debug.log*
+npm-error.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.npm
+.eslintcache
+.node_repl_history
+
 # Python
 __pycache__/
 *.py[cod]
@@ -29,17 +41,24 @@ wheels/
 *.swp
 *.swo
 *~
+*.iml
+*.sublime-workspace
+*.sublime-project
 
 # OS
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
 
 # Docker
 .dockerignore
+.docker/
 
 # Environment
 .env
 .env.local
+.env.*.local
 
 # Logs
 *.log
@@ -50,3 +69,20 @@ logs/
 *.out
 dist/
 build/
+
+# Test & Coverage
+coverage/
+.nyc_output/
+.c8rc
+test-results/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.mongodb
+
+# Temporary files
+tmp/
+temp/
+.tmp/

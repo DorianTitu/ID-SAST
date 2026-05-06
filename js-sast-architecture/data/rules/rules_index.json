@@ -1,0 +1,66 @@
+{
+  "SQL_INJECTION_pattern": [
+    {
+      "id": "rule_1777301997045_qnvdbw4f8",
+      "timestamp": "2026-04-27T14:59:57.045Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777303051015_d2worhrv8",
+      "timestamp": "2026-04-27T15:17:31.015Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777303991439_i1hrr3mr0",
+      "timestamp": "2026-04-27T15:33:11.439Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777304128295_1cbhfslpr",
+      "timestamp": "2026-04-27T15:35:28.295Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777305340704_ts97uhwfr",
+      "timestamp": "2026-04-27T15:55:40.704Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777305442543_m3eu8pheo",
+      "timestamp": "2026-04-27T15:57:22.543Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777305804957_pgtg9zivx",
+      "timestamp": "2026-04-27T16:03:24.957Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777305871807_2zz541u8d",
+      "timestamp": "2026-04-27T16:04:31.807Z",
+      "source": "local_fallback",
+      "confidence": 95
+    },
+    {
+      "id": "rule_1777306346124_8gsn5xvj5",
+      "timestamp": "2026-04-27T16:12:26.124Z",
+      "source": "local_fallback",
+      "confidence": 95
+    }
+  ],
+  "INJECTION_pattern": [
+    {
+      "id": "rule_1777306346432_ltq633gxe",
+      "timestamp": "2026-04-27T16:12:26.432Z",
+      "source": "local_fallback",
+      "confidence": 95
+    }
+  ]
+}

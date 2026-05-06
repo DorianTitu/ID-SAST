@@ -1,0 +1,9 @@
+id,timestamp,pattern_name,logic_threshold,vulnerability_type,confidence_score,was_mitigated,source_pattern,sink_pattern
+"rule_1777301997045_qnvdbw4f8","2026-04-27T14:59:57.045Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION → CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777303051015_d2worhrv8","2026-04-27T15:17:31.015Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777303991439_i1hrr3mr0","2026-04-27T15:33:11.439Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id=req.query.id","db.query"
+"rule_1777304128295_1cbhfslpr","2026-04-27T15:35:28.295Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777305340704_ts97uhwfr","2026-04-27T15:55:40.704Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777305442543_m3eu8pheo","2026-04-27T15:57:22.543Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777305804957_pgtg9zivx","2026-04-27T16:03:24.957Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
+"rule_1777305871807_2zz541u8d","2026-04-27T16:04:31.807Z","SQL_INJECTION_pattern","UNTRUSTED_SOURCE && SQL_SINK && NO_SANITIZATION � CRITICAL","SQL_INJECTION",95,false,"id = req.query.id","db.query"
