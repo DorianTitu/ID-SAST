@@ -53,8 +53,8 @@ from core.analyzers.semantic_analyzer import SyncSemanticAnalyzer
 from core.analyzers.taint_analyzer import TaintAnalyzer
 from core.analyzers.vulnerability_classifier import VulnerabilityClassifier
 from core.parsers.ast_importer import AstImporter
-from core.parsers.cfg_builder import CFGBuilder
-from core.parsers.dfg_builder import DFGBuilder
+from core.parsers.cfg_builder import CfgBuilder
+from core.parsers.dfg_builder import DfgBuilder
 from core.parsers.framework_detector import FrameworkDetector
 from core.parsers.roslyn_client import RoslynClientConfig, SyncRoslynClient
 from core.rules.rule_loader import RuleLoader
@@ -64,6 +64,7 @@ from reports.console_report import ConsoleReport, ConsoleReportConfig
 from reports.html_report import HTMLReport, HTMLReportConfig
 from reports.json_report import JsonReport, ReportMetrics
 from reports.sarif_report import SarifReport, SarifReportConfig
+from config.settings import Settings
 
 
 logger = logging.getLogger(__name__)
@@ -174,8 +175,8 @@ class CSharpSASTScanner:
 
         self.console_report.print_banner(self.config.project_name, profile)
 
-        cfg_index = CFGBuilder().build(model)
-        dfg_index = DFGBuilder().build(model)
+        cfg_index = CfgBuilder().build(model)
+        dfg_index = DfgBuilder().build(model)
 
         rules = RuleLoader().load_all()
         taint_analyzer = TaintAnalyzer(
@@ -549,11 +550,11 @@ def _parse_ci_metadata(items: list[str]) -> dict[str, Any]:
 def _resolve_output_dir(project_path: Path, explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return (project_path / "reports" / "output").resolve()
+    return Path(Settings.REPORTS_DIR).resolve()
 
 
 def _should_enable_persistence() -> bool:
-    return bool(os.getenv("MONGODB_URI"))
+    return Settings.USE_PERSISTENCE and bool(Settings.MONGODB_URI)
 
 
 def main(argv: list[str] | None = None) -> int:
