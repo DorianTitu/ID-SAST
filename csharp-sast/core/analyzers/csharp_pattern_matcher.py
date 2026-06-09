@@ -540,11 +540,11 @@ class CSharpPatternMatcher:
             pattern = self._find_matching_pattern(sn.resolved_symbol)
             if not pattern:
                 continue
-
-            # Verificar condiciones adicionales de la regla
-            if not self._should_report(sn, pattern):
+            
+            # ── FIX: pasar el modelo para verificar sanitización en contexto ──
+            if not self._should_report(sn, pattern, model):
                 continue
-
+            
             # Obtener contexto del método y clase
             method = model.get_method_for_node(sn)
             cls    = model.get_class_for_node(sn)
@@ -615,7 +615,7 @@ class CSharpPatternMatcher:
 
         return None
 
-    def _should_report(self, sn: CSharpSemanticNode, pattern: SinkPattern) -> bool:
+    def _should_report(self, sn: CSharpSemanticNode, pattern: SinkPattern, model: ParsedCSharpModel | None = None) -> bool:
         """
         Determina si el match debe reportarse según las condiciones del patrón.
 
@@ -633,12 +633,50 @@ class CSharpPatternMatcher:
                 if pos < len(sn.arguments):
                     arg = sn.arguments[pos]
                     if not arg.is_literal:
+                        if (pattern.vulnerability_kind == VulnerabilityKind.PATH_TRAVERSAL
+                                and model is not None):
+                            if self._path_is_sanitized_in_method(sn, model):
+                                return False
                         return True
-            # Todos los argumentos relevantes son literales → seguro
             return False
-
         # Si no hay posiciones definidas, reportar si tiene args no literales
         return sn.has_potentially_tainted_args or not sn.arguments
+
+    def _path_is_sanitized_in_method(
+        self,
+        sink_sn: CSharpSemanticNode,
+        model: ParsedCSharpModel,
+    ) -> bool:
+        """
+        Verifica si en el mismo método hay llamadas a GetFileName y StartsWith
+        ANTES del sink — patrón de sanitización correcto para path traversal.
+        """
+        if not sink_sn.containing_method_id:
+            return False
+
+        nodes_in_method = model.nodes_by_method.get(sink_sn.containing_method_id, [])
+
+        has_get_filename = False
+        has_starts_with  = False
+        has_get_fullpath = False
+
+        for n in nodes_in_method:
+            if n.line >= sink_sn.line:
+                continue  # Solo mirar ANTES del sink
+
+            symbol = (n.resolved_symbol or "").lower()
+            text   = (n.text or "").lower()
+
+            if "path.getfilename" in symbol or "getfilename" in text:
+                has_get_filename = True
+            if "path.getfullpath" in symbol or "getfullpath" in text:
+                has_get_fullpath = True
+            if "startswith" in text:
+                has_starts_with = True
+
+        # Patrón seguro: GetFileName + (GetFullPath o StartsWith)
+        return has_get_filename and (has_get_fullpath or has_starts_with)
+
 
     def _adjust_confidence(
         self, sn: CSharpSemanticNode, pattern: SinkPattern

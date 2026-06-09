@@ -151,6 +151,25 @@
   </ItemGroup>
 
   <!-- ────────────────────────────────────────────────────────────
+     REFERENCIAS PARA COMPILAR SAMPLES DE ANÁLISIS
+     ──────────────────────────────────────────────────────────── -->
+  <ItemGroup>
+    <!--
+      Microsoft.Data.SqlClient
+      ─────────────────────────
+      Reemplaza System.Data.SqlClient en .NET Core / .NET 8.
+      Necesario para compilar los samples que usan SqlCommand,
+      SqlConnection y SqlParameter sin errores de tipo no encontrado.
+      
+      System.Data.SqlClient fue movido a NuGet en .NET Core y
+      eliminado del BCL en .NET 8. El bridge usa este paquete para
+      que el SemanticModel pueda resolver los símbolos correctamente.
+    -->
+    <PackageReference Include="Microsoft.Data.SqlClient"
+                      Version="5.2.2" />
+  </ItemGroup>
+
+  <!-- ────────────────────────────────────────────────────────────
        LOGGING Y OBSERVABILIDAD
        ──────────────────────────────────────────────────────────── -->
   <ItemGroup>

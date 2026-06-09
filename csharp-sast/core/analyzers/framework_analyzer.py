@@ -558,7 +558,7 @@ class FrameworkAnalyzer:
 
                 findings.append(FrameworkFinding(
                     finding_id=self._next_id(),
-                    vulnerability_kind=VulnerabilityKind.UNKNOWN,
+                    vulnerability_kind=VulnerabilityKind.CSRF,
                     category=FrameworkFindingCategory.CSRF,
                     confidence=TaintConfidence.HIGH,
                     rule_id="FW-ASPNET-001",

@@ -803,3 +803,4 @@ public sealed record HealthResponse(
     [property: JsonPropertyName("timestamp")]
     string Timestamp
 );
+

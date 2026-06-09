@@ -10,7 +10,7 @@
 // DESCRIPTION: Uso de SqlParameter para evitar inyección SQL
 // =============================================================
 
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Tests.Samples.Sqli

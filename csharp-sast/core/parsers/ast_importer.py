@@ -436,24 +436,42 @@ class AstImporter:
     # El engine Python tiene el catálogo completo en core/rules/;
     # esto es solo para acelerar el acceso sin cargar todas las reglas aquí.
     _SINK_PREFIXES = (
+        # SQL Injection — solo constructores y métodos de ejecución
         "System.Data.SqlClient.SqlCommand",
         "Microsoft.Data.SqlClient.SqlCommand",
+        "System.Data.SqlClient.SqlCommand..ctor",
+        "System.Data.SqlClient.SqlCommand.ExecuteReader",
+        "System.Data.SqlClient.SqlCommand.ExecuteNonQuery",
+        "System.Data.SqlClient.SqlCommand.ExecuteScalar",
+        "System.Data.SqlClient.SqlCommand.ExecuteXmlReader",
+        "Microsoft.Data.SqlClient.SqlCommand..ctor",
+        "Microsoft.Data.SqlClient.SqlCommand.ExecuteReader",
+        "Microsoft.Data.SqlClient.SqlCommand.ExecuteNonQuery",
+        "Microsoft.Data.SqlClient.SqlCommand.ExecuteScalar",
+        "Microsoft.Data.SqlClient.SqlCommand.ExecuteXmlReader",
         "System.Data.OleDb.OleDbCommand",
         "System.Data.Odbc.OdbcCommand",
         "Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSqlRaw",
         "Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.ExecuteSqlRaw",
         "Dapper.SqlMapper.",
+        # Command Injection
         "System.Diagnostics.Process.Start",
+        # Path Traversal
         "System.IO.File.",
+        # Deserialization
         "System.Runtime.Serialization.Formatters.Binary.BinaryFormatter",
         "System.Web.Script.Serialization.JavaScriptSerializer.Deserialize",
         "Newtonsoft.Json.JsonConvert.DeserializeObject",
+        # XXE
         "System.Xml.XmlDocument.Load",
         "System.Xml.XmlTextReader",
+        # SSRF
         "System.Net.Http.HttpClient.",
         "System.Net.WebClient.",
+        # Reflection
         "System.Reflection.Assembly.Load",
         "System.Activator.CreateInstance",
+        # XSS
         "Microsoft.AspNetCore.Html.HtmlString",
         "System.Web.HtmlString",
     )
@@ -463,19 +481,28 @@ class AstImporter:
         "Microsoft.AspNetCore.Http.IFormCollection",
         "Microsoft.AspNetCore.Http.IHeaderDictionary",
         "Microsoft.AspNetCore.Http.HttpRequest.",
+        "Microsoft.AspNetCore.Http.IQueryCollection[indexer]",
+        "Microsoft.AspNetCore.Http.IFormCollection[indexer]", 
+        "Microsoft.AspNetCore.Http.IHeaderDictionary[indexer]", 
         "Microsoft.AspNetCore.Routing.RouteData",
         "System.Web.HttpRequest.",
         "System.Console.ReadLine",
         "System.Environment.GetCommandLineArgs",
+        "Microsoft.AspNetCore.Http.IFormFile.FileName",
     )
 
     _SANITIZER_PREFIXES = (
         "System.Data.SqlClient.SqlParameter",
         "Microsoft.Data.SqlClient.SqlParameter",
+        "System.Data.SqlClient.SqlCommand.AddWithValue",
+        "Microsoft.Data.SqlClient.SqlCommand.AddWithValue",
+        "System.Data.SqlClient.SqlCommand.Parameters",
+        "Microsoft.Data.SqlClient.SqlCommand.Parameters",
         "System.Net.WebUtility.HtmlEncode",
         "System.Web.HttpUtility.HtmlEncode",
         "System.Text.Encodings.Web.HtmlEncoder.Encode",
         "System.IO.Path.GetFileName",
+        "System.IO.Path.GetFullPath",
         "System.Int32.TryParse",
         "System.Guid.TryParse",
     )
@@ -606,7 +633,7 @@ class AstImporter:
         nodes = []
         for rn in raw_nodes:
             args = [self._import_argument(ra) for ra in rn.get("arguments", [])]
-            symbol = rn.get("resolved_symbol")
+            symbol = self._normalize_symbol(rn.get("resolved_symbol"), rn.get("text", ""))
             node = CSharpSemanticNode(
                 node_id=rn["node_id"],
                 kind=rn["kind"],
@@ -628,6 +655,85 @@ class AstImporter:
             )
             nodes.append(node)
         return nodes
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    #  NORMALIZACIÓN DE SÍMBOLOS (fallback mientras el bridge emite nombres cortos)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    # Mapa de nombre corto → fully qualified name
+    # Cubre los casos más frecuentes que el bridge devuelve sin namespace
+    _SHORT_TO_FQN: dict[str, str] = {
+        # System.IO
+        "ReadAllText":    "System.IO.File.ReadAllText",
+        "WriteAllText":   "System.IO.File.WriteAllText",
+        "ReadAllBytes":   "System.IO.File.ReadAllBytes",
+        "WriteAllBytes":  "System.IO.File.WriteAllBytes",
+        "Delete":         "System.IO.File.Delete",
+        "Combine":        "System.IO.Path.Combine",
+        "GetFullPath":    "System.IO.Path.GetFullPath",
+        "GetFileName":    "System.IO.Path.GetFileName",
+        # System.Data.SqlClient
+        "SqlCommand":     "System.Data.SqlClient.SqlCommand",
+        "SqlConnection":  "System.Data.SqlClient.SqlConnection",
+        "ExecuteNonQuery":"System.Data.SqlClient.SqlCommand.ExecuteNonQuery",
+        "ExecuteReader":  "System.Data.SqlClient.SqlCommand.ExecuteReader",
+        "ExecuteScalar":  "System.Data.SqlClient.SqlCommand.ExecuteScalar",
+        # Microsoft.Data.SqlClient (preferido en .NET 8)
+        # el bridge lo resuelve como SqlCommand también cuando no hay referencia
+        # System.Diagnostics
+        "Start":          "System.Diagnostics.Process.Start",
+        # System.Console
+        "ReadLine":       "System.Console.ReadLine",
+        "ToString":       None,  # Ignorar — no es un sink/source relevante
+        # IFormFile — source de path traversal
+        "FileName":    "Microsoft.AspNetCore.Http.IFormFile.FileName",
+    }
+
+    def _normalize_symbol(self, symbol: str | None, node_text: str) -> str | None:
+        """
+        Intenta obtener el fully qualified name cuando el bridge devuelve
+        solo el nombre corto del método (bug Problema 1).
+
+        Estrategia:
+        1. Si el símbolo ya tiene namespace (contiene '.') → devolver tal cual.
+        2. Si está en el mapa _SHORT_TO_FQN → devolver el FQN conocido.
+        3. Si no → devolver el símbolo original (puede ser correcto o inútil).
+        """
+        if not symbol:
+            return symbol
+
+        # ── NUEVO: quitar el prefijo global:: que emite Roslyn ──────────────
+        if symbol.startswith("global::"):
+            symbol = symbol[len("global::"):]
+
+
+        # Ya tiene namespace → está bien
+        if "." in symbol:
+            return symbol
+
+        fqn = self._SHORT_TO_FQN.get(symbol)
+
+        # None explícito = símbolo que queremos descartar (ej: ToString)
+        if fqn is None and symbol in self._SHORT_TO_FQN:
+            return None
+
+        if fqn:
+            logger.debug(
+                "AstImporter: símbolo normalizado '%s' → '%s'",
+                symbol, fqn,
+            )
+            return fqn
+
+        # Última heurística: buscar en el texto del nodo
+        # ej: text = "File.ReadAllText(path)" → inferir System.IO.File
+        if "File." in node_text:
+            return f"System.IO.File.{symbol}"
+        if "SqlCommand" in node_text or "cmd." in node_text.lower():
+            return f"System.Data.SqlClient.SqlCommand.{symbol}"
+        if "Process." in node_text:
+            return f"System.Diagnostics.Process.{symbol}"
+
+        return symbol
 
     def _import_argument(self, ra: dict[str, Any]) -> ArgumentInfo:
         return ArgumentInfo(
@@ -787,6 +893,9 @@ class AstImporter:
 
     def _is_sink(self, symbol: str | None) -> bool:
         if not symbol:
+            return False
+        # Excluir explícitamente sanitizadores aunque hagan match con prefijo de sink
+        if any(symbol.startswith(s) for s in self._SANITIZER_PREFIXES):
             return False
         return any(symbol.startswith(p) for p in self._SINK_PREFIXES)
 

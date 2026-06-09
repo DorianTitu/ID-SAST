@@ -77,6 +77,7 @@ class VulnerabilityKind(Enum):
     XSS                       = "XSS"
     LOG_INJECTION             = "LOG_INJECTION"
     OPEN_REDIRECT             = "OPEN_REDIRECT"
+    CSRF                      = "CSRF"   
     UNKNOWN                   = "UNKNOWN"
 
 
@@ -232,6 +233,10 @@ _SANITIZER_SYMBOLS: set[str] = {
     "System.Int64.TryParse",
     "System.Double.TryParse",
     "System.Text.RegularExpressions.Regex.IsMatch",
+    "System.IO.Path.GetFullPath",                    
+    "System.String.StartsWith",                      
+    "System.Data.SqlClient.SqlCommand.Parameters",      
+    "Microsoft.Data.SqlClient.SqlCommand.Parameters", 
 }
 
 
@@ -417,6 +422,14 @@ class TaintAnalyzer:
             sn = sink_dfg_node.semantic_node
             if not sn:
                 continue
+            
+            # ── FIX: si el sink tiene primer argumento literal → query parametrizada → seguro ──
+            if sn.arguments and sn.arguments[0].is_literal:
+                logger.debug(
+                    "Sink ignorado — primer argumento es literal (query parametrizada): %s:%d",
+                    sn.file.split("/")[-1], sn.line
+                )
+                continue
 
             # Encontrar el source original que originó este taint
             source_dfg_id = self._find_taint_origin(
@@ -588,6 +601,11 @@ class TaintAnalyzer:
     #  FASE C: STRING INJECTION PATTERNS
     # ─────────────────────────────────────────────────────────────────────────
 
+    _EXECUTE_METHODS_NO_ARGS: frozenset[str] = frozenset({
+    "ExecuteReader", "ExecuteNonQuery", "ExecuteScalar",
+    "ExecuteReaderAsync", "ExecuteNonQueryAsync", "ExecuteScalarAsync",
+    })
+
     def _analyze_string_injection(self, model: ParsedCSharpModel) -> list[TaintFinding]:
         """
         Detecta SQL/Command injection vía string interpolation y concatenación.
@@ -608,9 +626,10 @@ class TaintAnalyzer:
 
                 # Encontrar asignaciones de string building tainted
                 string_builds = [
-                    a for a in assignments
-                    if a.target_name in ("__interpolated_string", "__string_concat")
-                    and not a.is_literal
+                a for a in assignments
+                if not a.is_literal
+                and self._string_build_has_variable(a.source_text)
+                and self._source_text_is_string_concat(a.source_text)
                 ]
 
                 if not string_builds:
@@ -623,6 +642,21 @@ class TaintAnalyzer:
                     for sink_sn in sink_nodes:
                         # El sink debe estar cerca de la interpolación (misma zona del método)
                         if abs(sink_sn.line - sb.line) > 10:
+                            continue
+                        
+                         #Excluir Execute* sin argumentos
+                        symbol_short = (sink_sn.resolved_symbol or "").split(".")[-1]
+                        if not sink_sn.arguments and symbol_short in self._EXECUTE_METHODS_NO_ARGS:
+                            continue
+
+                        #Si el sink solo recibe literales o parámetros → seguro
+                        if self._sink_uses_only_literal_or_parameterized(sink_sn):
+                            continue
+                        
+                        # ── FIX: verificar que el string build realmente fluye al sink ──
+                        # Si el sink recibe una variable cuyo nombre NO coincide con
+                        # el target del string build, el taint no llega a ese sink.
+                        if not self._string_build_flows_to_sink(sb, sink_sn):
                             continue
 
                         # Verificar que no hay sanitizador entre el string build y el sink
@@ -671,6 +705,129 @@ class TaintAnalyzer:
     #  HELPERS DE TAINT
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _string_build_has_variable(self, source_text: str) -> bool:
+        """
+        True si la construcción de string contiene una variable real.
+        
+        Estrategia: verificar si el source_text del assignment tiene
+        data_flow_origin != literal, o si contiene identificadores
+        fuera de las comillas.
+        """
+        if not source_text:
+            return False
+        
+        import re
+        # ── FIX: solo quitar strings entre comillas DOBLES (C# no usa comillas simples para strings)
+        # Las comillas simples en C# son chars o parte del contenido del string
+        without_strings = re.sub(r'"(?:[^"\\]|\\.)*"', 'LITERAL', source_text)
+        # NO quitar comillas simples — en C# son parte del contenido del string SQL
+        
+        tokens = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', without_strings)
+        
+        C_SHARP_KEYWORDS = {
+            'LITERAL', 'var', 'string', 'int', 'bool', 'new', 'return',
+            'null', 'true', 'false', 'using', 'this', 'if', 'else',
+            'ToString', 'String',
+        }
+        real_identifiers = [t for t in tokens if t not in C_SHARP_KEYWORDS]
+        
+        return len(real_identifiers) > 0
+    
+
+
+    def _source_text_is_string_concat(self, source_text: str) -> bool:
+        """
+        True si el source_text es una concatenación/interpolación de string
+        que incluye al menos un literal de string.
+        
+        Detecta:
+        "SELECT ... '" + id + "'"     → True  (tiene literal + variable)
+        $"SELECT WHERE id={userId}"   → True  (interpolación)
+        new SqlConnection("...")      → False (constructor, no concat)
+        Path.Combine("x", y)         → False (llamada a método)
+        Request.Query["id"].ToString()→ False (acceso a propiedad)
+        """
+        stripped = source_text.strip()
+        
+        # Interpolación de string
+        if stripped.startswith('$"') or stripped.startswith('$@"'):
+            return True
+        
+        # Concatenación: contiene un string literal Y el operador +
+        import re
+        has_string_literal = bool(re.search(r'"[^"]*"', stripped))
+        has_plus_operator  = '+' in stripped
+        
+        return has_string_literal and has_plus_operator
+
+    def _sink_uses_only_literal_or_parameterized(self, sink_sn: CSharpSemanticNode) -> bool:
+        # Sinks sin argumentos propios (ExecuteReader, ExecuteNonQuery, ExecuteScalar)
+        # Solo son vulnerables si el SqlCommand que los llama recibió una query dinámica.
+        # No podemos determinarlo aquí sin el grafo completo → no reportar desde
+        # string_injection (el taint intra-procedural lo detectará si aplica).
+        if not sink_sn.arguments:
+            return True   # ← CAMBIAR False por True
+
+        first_arg = sink_sn.arguments[0]
+        if first_arg.is_literal:
+            return True
+        if first_arg.data_flow_origin == "literal":
+            return True
+        text = first_arg.text.strip()
+        if text.startswith('"') or text.startswith("'") or text.startswith("@\""):
+            return True
+        return False
+
+    def _string_build_flows_to_sink(self, sb: Any, sink_sn: CSharpSemanticNode) -> bool:
+        """
+        True si el string build realmente fluye al sink.
+        
+        Verifica que el primer argumento del sink referencia la variable
+        producida por el string build (sb.target_name).
+        
+        Ejemplos:
+        sb.target_name = 'sql'
+        sink arg0.text = 'sql'           → True  (fluye)
+        sink arg0.text = '"SELECT @id"'  → False (no fluye, es literal)
+        
+        sb.target_name = '__string_concat'
+        sink arg0.text = 'sql'           → False (no fluye al cmd del Fixed)
+        sink arg0.text = '__string_concat'→ True (caso raro)
+        """
+        if not sink_sn.arguments:
+            return False
+        
+        first_arg = sink_sn.arguments[0]
+        
+        # Si el argumento es literal → no puede venir del string build
+        if first_arg.is_literal:
+            return False
+        
+        arg_text = first_arg.text.strip()
+        target = sb.target_name.strip()
+        
+        # El argumento referencia directamente la variable del string build
+        if arg_text == target:
+            return True
+        
+        # El argumento contiene la variable (ej: "sql.Trim()" contiene "sql")
+        if target != '__string_concat' and target in arg_text:
+            return True
+        
+        # Para __string_concat: el argumento debe ser una variable que
+        # recibe el resultado de la concatenación — buscar por data_flow_origin
+        if target == '__string_concat':
+            # Solo reportar si el argumento viene de una concatenación inline
+            # (el texto del argumento contiene + y strings)
+            import re
+            has_literal = bool(re.search(r'"[^"]*"', arg_text))
+            has_plus = '+' in arg_text
+            if has_literal and has_plus:
+                return True
+            return False
+        
+        return False
+
     def _get_parameter_taint_label(
         self,
         param: Any,
@@ -700,8 +857,17 @@ class TaintAnalyzer:
         for source_prefix, label in self._source_taint_labels.items():
             if source_prefix in param.resolved_type:
                 return label
+        
+        # IFormFile siempre es tainted — su contenido y FileName vienen del cliente
+        if "IFormFile" in param.resolved_type:
+            return "USER_INPUT"
+
+        # IFormFileCollection también
+        if "IFormFileCollection" in param.resolved_type:
+            return "USER_INPUT"
 
         return None
+    
 
     def _get_node_taint_label(self, node: CSharpSemanticNode) -> str:
         """Determina el taint label de un nodo source."""

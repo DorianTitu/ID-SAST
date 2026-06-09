@@ -295,24 +295,27 @@ public sealed class CfgExtractor
         };
 
     private static string DetermineEdgeKind(
-        ControlFlowBranch branch,
-        BasicBlock fromBlock,
-        bool isFallthrough)
+    ControlFlowBranch branch,
+    BasicBlock fromBlock,
+    bool isFallthrough)
     {
-        if (branch.IsUnconditionalFallThrough)
+        // Regular sin condición = sequential (fallthrough incondicional)
+        if (branch.Semantics == ControlFlowBranchSemantics.Regular &&
+            fromBlock.BranchValue is null)
             return "sequential";
 
         if (branch.Semantics == ControlFlowBranchSemantics.Return)
             return "return";
 
+        // Throw y Rethrow — usar || en lugar de 'or' para compatibilidad
         if (branch.Semantics == ControlFlowBranchSemantics.Throw
-            || branch.Semantics == ControlFlowBranchSemantics.ThrowWithExceptionType)
+            || branch.Semantics == ControlFlowBranchSemantics.Rethrow)
             return "throw";
 
         if (branch.Semantics == ControlFlowBranchSemantics.Error)
             return "exception";
 
-        // Para branches condicionales
+        // Branches condicionales (if/while/switch)
         if (fromBlock.BranchValue is not null)
             return isFallthrough ? "true_branch" : "false_branch";
 
@@ -352,11 +355,30 @@ public sealed class CfgExtractor
 
     private static bool IsExceptionHandlerBlock(BasicBlock block, ControlFlowGraph cfg)
     {
-        // Un bloque es exception handler si alguna región que lo contiene es tipo Catch/Finally
-        return cfg.Regions.Any(r =>
-            (r.Kind == ControlFlowRegionKind.Catch || r.Kind == ControlFlowRegionKind.Finally)
-            && r.FirstBlockOrdinal <= block.Ordinal
-            && r.LastBlockOrdinal  >= block.Ordinal);
+        return IsBlockInExceptionRegion(block.Ordinal, cfg.Root);
+    }
+
+    private static bool IsBlockInExceptionRegion(int blockOrdinal, ControlFlowRegion region)
+    {
+        // Verificar si el bloque está dentro de esta región y la región es Catch/Finally
+        bool inRange = region.FirstBlockOrdinal <= blockOrdinal
+                    && region.LastBlockOrdinal  >= blockOrdinal;
+
+        if (inRange && region.Kind is ControlFlowRegionKind.Catch
+                                or ControlFlowRegionKind.Finally)
+            return true;
+
+        // Recorrer las sub-regiones recursivamente
+        if (inRange)
+        {
+            foreach (var nested in region.NestedRegions)
+            {
+                if (IsBlockInExceptionRegion(blockOrdinal, nested))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static Dictionary<string, List<SemanticNode>> BuildNodesByMethodId(RoslynExportRoot root)

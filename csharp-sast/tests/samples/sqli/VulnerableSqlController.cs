@@ -10,7 +10,7 @@
 // DESCRIPTION: SqlCommand construido con concatenación de QueryString
 // =============================================================
 
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Tests.Samples.Sqli

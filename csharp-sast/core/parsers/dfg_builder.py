@@ -447,6 +447,85 @@ class DfgBuilder:
                             arg_position=arg.position,
                         )
 
+        # ── G. Conectar source nodes → assignments que los contienen ──────────────
+        # El bridge no siempre popula source_node_id en assignments cuando
+        # el source está encadenado (Request.Query["id"].ToString()).
+        # Conectamos por: si el source_text del assignment contiene el texto
+        # del source node Y están en la misma línea.
+        for sn in semantic_nodes:
+            if not sn.is_known_source:
+                continue
+            sn_dfg_id = semantic_dfg_ids.get(sn.node_id)
+            if not sn_dfg_id:
+                continue
+
+            for asgn in assignments:
+                if asgn.is_literal:
+                    continue
+                asgn_dfg_id = assignment_dfg_ids.get(asgn.assignment_id)
+                if not asgn_dfg_id:
+                    continue
+
+                # Conectar si el assignment está en la misma línea que el source
+                # o si el source_text contiene el texto del source node
+                same_line = (asgn.line == sn.line)
+                text_contains = sn.text and sn.text[:30] in asgn.source_text
+
+                if same_line or text_contains:
+                    g.add_edge(
+                        sn_dfg_id, asgn_dfg_id,
+                        edge_kind=DfgEdgeKind.FLOWS_TO.value,
+                        via_source=True,
+                    )
+
+        # ── H. Conectar assignments → sink nodes por variable ─────────────────────
+        sanitizer_lines_by_var: dict[str, list[int]] = {}
+        for sn in semantic_nodes:
+            if not sn.is_known_sanitizer:
+                continue
+            for arg in sn.arguments:
+                if not arg.is_literal:
+                    sanitizer_lines_by_var.setdefault(arg.text, []).append(sn.line)
+
+        var_to_asgn_dfg_local: dict[str, str] = {}
+        for asgn in assignments:
+            if not asgn.is_literal:
+                dfg_id = assignment_dfg_ids.get(asgn.assignment_id)
+                if dfg_id:
+                    var_to_asgn_dfg_local[asgn.target_name] = dfg_id
+
+        for sn in semantic_nodes:
+            if not sn.is_known_sink:
+                continue
+            sn_dfg_id = semantic_dfg_ids.get(sn.node_id)
+            if not sn_dfg_id:
+                continue
+            for arg in sn.arguments:
+                if arg.is_literal:
+                    continue
+                asgn_dfg_id = var_to_asgn_dfg_local.get(arg.text)
+                if not asgn_dfg_id or g.has_edge(asgn_dfg_id, sn_dfg_id):
+                    continue
+
+                # Si hay un sanitizador que usa esta variable antes del sink → no conectar
+                san_lines = sanitizer_lines_by_var.get(arg.text, [])
+                asgn_node = nodes_by_id.get(asgn_dfg_id)
+                asgn_line = asgn_node.line if asgn_node else 0
+                sanitized = any(asgn_line <= sl <= sn.line for sl in san_lines)
+
+                if not sanitized:
+                    # Si el primer argumento del sink es literal → la query está parametrizada
+                    first_arg_is_literal = (
+                        len(sn.arguments) > 0 and sn.arguments[0].is_literal
+                    )
+                    if first_arg_is_literal:
+                        continue
+                    g.add_edge(
+                        asgn_dfg_id, sn_dfg_id,
+                        edge_kind=DfgEdgeKind.FLOWS_TO.value,
+                        via_variable=arg.text,
+                    )
+
         return MethodDfg(
             method_id=method_id,
             method_name=method_name,
@@ -524,17 +603,20 @@ class DfgBuilder:
                             via_alias=arg.text,
                         )
 
-        # Conectar string builds → semantic nodes que los reciben
+        # ── Conectar string builds → semantic nodes que los reciben
         for asgn in assignments:
             if asgn.target_name in ("__interpolated_string", "__string_concat"):
                 asgn_dfg_id = assignment_dfg_ids.get(asgn.assignment_id)
                 if not asgn_dfg_id:
                     continue
-                # Encontrar semantic nodes en la misma línea que podrían usar este string
                 for sn in semantic_nodes:
                     if sn.is_known_sink and abs(sn.line - asgn.line) <= 2:
                         sn_dfg_id = semantic_dfg_ids.get(sn.node_id)
                         if sn_dfg_id:
+                            # ── FIX: no conectar si el sink tiene primer argumento literal ──
+                            # SqlCommand("SELECT ... @id", conn) → query parametrizada → seguro
+                            if sn.arguments and sn.arguments[0].is_literal:
+                                continue
                             g.add_edge(
                                 asgn_dfg_id, sn_dfg_id,
                                 edge_kind=DfgEdgeKind.FLOWS_TO.value,

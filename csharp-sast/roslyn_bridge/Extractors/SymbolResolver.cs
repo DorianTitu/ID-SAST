@@ -281,10 +281,13 @@ public sealed class SymbolResolver
         // En ASP.NET Core los parámetros simples de action methods sin atributo
         // también se bindean desde query string o route por convención.
         var isSimpleType = paramSymbol.Type.SpecialType is
-            SpecialType.System_String or SpecialType.System_Int32 or
-            SpecialType.System_Int64 or SpecialType.System_Boolean or
-            SpecialType.System_Guid;
-
+            SpecialType.System_String or 
+            SpecialType.System_Int32 or
+            SpecialType.System_Int64 or 
+            SpecialType.System_Boolean
+            ||
+            (paramSymbol.Type.Name == "Guid" &&
+            paramSymbol.Type.ContainingNamespace?.ToDisplayString() == "System");
         return isSimpleType && IsActionMethod(paramSymbol.ContainingSymbol as IMethodSymbol);
     }
 
@@ -430,6 +433,39 @@ public sealed class SymbolResolver
             ["AWSSDK.Core"]             = new("AWSSDK.Core",             ">=3.7",   RiskLevel.Medium),
             ["Azure.Core"]              = new("Azure.Core",              ">=1.35",  RiskLevel.Medium),
         };
+
+
+    /// <summary>
+    /// Normaliza el símbolo resuelto al formato fully qualified que espera el engine Python.
+    /// Convierte "ReadAllText" → "System.IO.File.ReadAllText"
+    /// usando el ISymbol disponible en el SemanticModel.
+    /// 
+    /// LLAMAR SIEMPRE DESDE SemanticExtractor antes de serializar el nodo.
+    /// </summary>
+    public static string NormalizeSymbol(ISymbol? symbol)
+    {
+        if (symbol is null)
+            return string.Empty;
+
+        // ToDisplayString con FullyQualifiedFormat produce:
+        //   "global::System.IO.File.ReadAllText(string)"
+        // Limpiamos el prefijo "global::" y la firma de parámetros
+        // para obtener: "System.IO.File.ReadAllText"
+        var full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        // Quitar "global::"
+        if (full.StartsWith("global::", StringComparison.Ordinal))
+            full = full["global::".Length..];
+
+        // Para métodos: quitar la firma de parámetros "(string, bool...)"
+        // Queremos el prefijo estable que usa el engine Python
+        var parenIdx = full.IndexOf('(', StringComparison.Ordinal);
+        if (parenIdx > 0)
+            full = full[..parenIdx];
+
+        return full;
+    }
+       
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

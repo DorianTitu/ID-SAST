@@ -73,18 +73,19 @@ public sealed class SemanticExtractor
         var startTime = DateTime.UtcNow;
 
         // ── 1. Cargar los archivos como SyntaxTrees ───────────────────────────
-        var (syntaxTrees, loadErrors) = await LoadSyntaxTreesAsync(request.Files, cancellationToken);
+        var languageVersion = ParseLanguageVersion(request.LanguageVersion);
+        var (syntaxTrees, loadErrors) = await LoadSyntaxTreesAsync(request.Files, languageVersion, cancellationToken);
         _logger.LogDebug("SyntaxTrees cargados: {Count}, errores: {Errors}", syntaxTrees.Count, loadErrors.Count);
 
         // ── 2. Construir la compilación en memoria ────────────────────────────
         var references = BuildReferences(request.ReferenceAssemblies);
-        var languageVersion = ParseLanguageVersion(request.LanguageVersion);
-        var compilation    = BuildCompilation(syntaxTrees, references, languageVersion);
+        var compilation = BuildCompilation(syntaxTrees, references, languageVersion);
 
         // ── 3. Detectar framework y versión de C# ────────────────────────────
         var frameworkDetected = DetectFramework(compilation);
         var nugetRefs         = ExtractNugetReferences(compilation);
         var languageVersionStr = languageVersion.ToDisplayString();
+        var treesInCompilation = compilation.SyntaxTrees.ToList();
 
         _logger.LogInformation("Framework detectado: {Framework}", frameworkDetected ?? "generic");
 
@@ -105,12 +106,32 @@ public sealed class SemanticExtractor
         // El procesamiento es por archivo para aislar errores de compilación.
         // Se paraleliza con un límite de concurrencia para no saturar la CPU.
         var semaphore = new SemaphoreSlim(Environment.ProcessorCount);
-        var tasks = syntaxTrees.Select(async tree =>
+        var tasks = treesInCompilation.Select(async tree =>
         {
             await semaphore.WaitAsync(cancellationToken);
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                
+                foreach (var t in compilation.SyntaxTrees)
+                {
+                    _logger.LogInformation(
+                        "Compilation Tree: {Path}",
+                        t.FilePath
+                    );
+                }
+
+                _logger.LogInformation(
+                    "Current Tree: {Path}",
+                    tree.FilePath
+                );
+
+                if (!compilation.SyntaxTrees.Contains(tree))
+                {
+                    throw new Exception(
+                        $"Tree {tree.FilePath} no pertenece a la compilación"
+                    );
+                }
 
                 var semanticModel = compilation.GetSemanticModel(tree);
                 var root          = await tree.GetRootAsync(cancellationToken);
@@ -127,17 +148,22 @@ public sealed class SemanticExtractor
                 lock (allUsings) { foreach (var u in usings) allUsings.Add(u); }
 
                 // Namespace raíz (tomar el primero encontrado)
-                if (rootNamespace is null)
-                {
-                    rootNamespace = root.DescendantNodes()
-                        .OfType<NamespaceDeclarationSyntax>()
-                        .Select(n => n.Name.ToString())
-                        .FirstOrDefault()
-                        ?? root.DescendantNodes()
-                               .OfType<FileScopedNamespaceDeclarationSyntax>()
-                               .Select(n => n.Name.ToString())
-                               .FirstOrDefault();
+                lock(allClasses){
+                    if (rootNamespace is null)
+                    {
+                        rootNamespace = 
+                            root.DescendantNodes()
+                                .OfType<NamespaceDeclarationSyntax>()
+                                .Select(n => n.Name.ToString())
+                                .FirstOrDefault()
+                            
+                             ?? root.DescendantNodes()
+                                    .OfType<FileScopedNamespaceDeclarationSyntax>()
+                                    .Select(n => n.Name.ToString())
+                                    .FirstOrDefault();
+                    }
                 }
+                
 
                 // Clases
                 var classVisitor = new ClassStructureVisitor(semanticModel, filePath);
@@ -212,18 +238,9 @@ public sealed class SemanticExtractor
         IReadOnlyList<MetadataReference> references,
         LanguageVersion languageVersion)
     {
-        var parseOptions = new CSharpParseOptions(languageVersion);
-
-        // Re-parsear con las opciones correctas si el árbol se cargó con defaults
-        var referencedTrees = trees.Select(t =>
-            t.Options is CSharpParseOptions opts && opts.LanguageVersion == languageVersion
-                ? t
-                : CSharpSyntaxTree.ParseText(t.GetText(), parseOptions, t.FilePath)
-        ).ToList();
-
         return CSharpCompilation.Create(
             assemblyName: "CSharpSastAnalysis",
-            syntaxTrees:  referencedTrees,
+            syntaxTrees:  trees,
             references:   references,
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
@@ -236,10 +253,10 @@ public sealed class SemanticExtractor
         );
     }
 
-    private static async Task<(List<SyntaxTree> Trees, List<CompilationErrorExport> Errors)>
-        LoadSyntaxTreesAsync(IReadOnlyList<string> files, CancellationToken ct)
+    private static async Task<(List<SyntaxTree>, List<CompilationErrorExport>)>
+        LoadSyntaxTreesAsync(IReadOnlyList<string> files, LanguageVersion languageVersion, CancellationToken ct)
     {
-        var trees  = new List<SyntaxTree>();
+        var trees = new List<SyntaxTree>();
         var errors = new List<CompilationErrorExport>();
 
         foreach (var file in files)
@@ -314,7 +331,11 @@ public sealed class SemanticExtractor
             "System.Data.Common.dll",
             "System.ComponentModel.dll",
             "System.ComponentModel.Annotations.dll",
+            "System.ComponentModel.Primitives.dll",     
+            "System.ComponentModel.TypeConverter.dll",    
             "System.Security.Cryptography.dll",
+            "System.Diagnostics.DiagnosticSource.dll",    
+            "System.Runtime.InteropServices.dll", 
             "netstandard.dll",
         };
 
@@ -323,6 +344,37 @@ public sealed class SemanticExtractor
             var path = Path.Combine(runtimeDir, asm);
             if (File.Exists(path))
                 refs.Add(MetadataReference.CreateFromFile(path));
+        }
+
+        // Microsoft.Data.SqlClient — reemplaza System.Data.SqlClient en .NET 8
+        // Sin esta referencia los tipos SqlCommand/SqlConnection no se resuelven.
+        var nugetPackagesDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".nuget", "packages"
+        );
+
+        // Buscar Microsoft.Data.SqlClient en el cache NuGet local
+        var sqlClientDirs = Directory.GetDirectories(
+            Path.Combine(nugetPackagesDir, "microsoft.data.sqlclient"),
+            "5.*",
+            SearchOption.TopDirectoryOnly
+        );
+
+        if (sqlClientDirs.Length > 0)
+        {
+            var latestSqlClient = sqlClientDirs.OrderByDescending(d => d).First();
+            // Buscar en net8.0 primero, luego netstandard2.0 como fallback
+            var sqlClientDll =
+                Directory.GetFiles(latestSqlClient, "Microsoft.Data.SqlClient.dll", SearchOption.AllDirectories)
+                    .OrderByDescending(f => f.Contains("net8.0") ? 1 : 0)
+                    .FirstOrDefault();
+
+            if (sqlClientDll is not null)
+            {
+                refs.Add(MetadataReference.CreateFromFile(sqlClientDll));
+                // También necesitamos Microsoft.Data.SqlClient.SNI para evitar
+                // errores de tipos dependientes
+            }
         }
 
         // ASP.NET Core — buscar en el directorio compartido de .NET
@@ -1008,4 +1060,124 @@ internal sealed class SastNodeVisitor : CSharpSyntaxWalker
 
     private static string TruncateText(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..maxLength] + "…";
+
+    
+    // ── Acceso a indexers (Request.Query["id"], Request.Form["x"], etc.) ──────
+    public override void VisitElementAccessExpression(ElementAccessExpressionSyntax node)
+    {
+        var typeInfo   = _semanticModel.GetTypeInfo(node.Expression);
+        var symbolInfo = _semanticModel.GetSymbolInfo(node);
+        
+        // Resolver el tipo del objeto sobre el que se indexa
+        var containerType = typeInfo.Type
+            ?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        // Solo registrar si el contenedor es un tipo de source conocido
+        // (IQueryCollection, IFormCollection, IHeaderDictionary, etc.)
+        var knownSourcePrefixes = new[]
+        {
+            "Microsoft.AspNetCore.Http.IQueryCollection",
+            "Microsoft.AspNetCore.Http.IFormCollection",
+            "Microsoft.AspNetCore.Http.IHeaderDictionary",
+            "Microsoft.AspNetCore.Http.HttpRequest",
+            "System.Web.HttpRequest",
+        };
+
+        var containerTypeNormalized = containerType?.Replace("global::", "") ?? "";
+        bool isKnownSource = containerTypeNormalized.Length > 0
+            && knownSourcePrefixes.Any(p =>
+                containerTypeNormalized.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
+        if (!isKnownSource && !_includeUnresolved)
+        {
+            base.VisitElementAccessExpression(node);
+            return;
+        }
+
+        // El símbolo resuelto será el tipo del contenedor + "[indexer]"
+        // Ejemplo: "Microsoft.AspNetCore.Http.IQueryCollection[string]"
+        var resolvedSymbol = containerType is not null
+            ? $"{containerType.Replace("global::", "")}[indexer]"
+            : null;
+
+        var returnType = _semanticModel.GetTypeInfo(node).Type
+            ?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        var containingMethodId = FindContainingMethodId(node);
+        var containingClassId  = FindContainingClassId(node);
+
+        var arguments = node.ArgumentList.Arguments.Count > 0
+            ? ExtractArguments(node.ArgumentList.Arguments, containingMethodId)
+            : new List<ArgumentExport>();
+
+        var semanticNode = new SemanticNode(
+            NodeId:             Guid.NewGuid().ToString("N"),
+            Kind:               "ElementAccessExpression",
+            Text:               TruncateText(node.ToString(), 200),
+            File:               _filePath,
+            Line:               node.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
+            Column:             node.GetLocation().GetLineSpan().StartLinePosition.Character + 1,
+            ResolvedSymbol:     resolvedSymbol,
+            ResolvedType:       returnType,
+            ContainingMethodId: containingMethodId,
+            ContainingClassId:  containingClassId,
+            Arguments:          arguments,
+            IsAsyncCall:        false,
+            IsInTryBlock:       IsInsideTryBlock(node),
+            ParentContext:      GetParentContext(node)
+        );
+
+        SemanticNodes.Add(semanticNode);
+        base.VisitElementAccessExpression(node);
+    }
+
+    // ── Acceso a miembros de sources HTTP (Request.Query, Request.Form, etc.) ──
+    public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
+    {
+        var typeInfo = _semanticModel.GetTypeInfo(node);
+        var resolvedType = typeInfo.Type
+            ?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        // Registrar solo accesos a propiedades de HttpRequest que son sources
+        var knownHttpRequestMembers = new[]
+        {
+            "Microsoft.AspNetCore.Http.IQueryCollection",
+            "Microsoft.AspNetCore.Http.IFormCollection",
+            "Microsoft.AspNetCore.Http.IHeaderDictionary",
+            "Microsoft.AspNetCore.Http.IFormFileCollection",
+            "System.Web.HttpRequestBase",
+        };
+
+        var resolvedTypeNormalized = resolvedType?.Replace("global::", "") ?? "";
+        bool isSourceType = resolvedTypeNormalized.Length > 0
+            && knownHttpRequestMembers.Any(p =>
+                resolvedTypeNormalized.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
+        if (!isSourceType)
+        {
+            base.VisitMemberAccessExpression(node);
+            return;
+        }
+
+        var containingMethodId = FindContainingMethodId(node);
+
+        SemanticNodes.Add(new SemanticNode(
+            NodeId:             Guid.NewGuid().ToString("N"),
+            Kind:               "MemberAccessExpression",
+            Text:               TruncateText(node.ToString(), 200),
+            File:               _filePath,
+            Line:               node.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
+            Column:             node.GetLocation().GetLineSpan().StartLinePosition.Character + 1,
+            ResolvedSymbol:     resolvedType,
+            ResolvedType:       resolvedType,
+            ContainingMethodId: containingMethodId,
+            ContainingClassId:  FindContainingClassId(node),
+            Arguments:          [],
+            IsAsyncCall:        false,
+            IsInTryBlock:       IsInsideTryBlock(node),
+            ParentContext:      GetParentContext(node)
+        ));
+
+        base.VisitMemberAccessExpression(node);
+    }
 }

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Importación defensiva de la SDK de Google — el engine funciona sin ella
 try:
-    import google.generativeai as genai
+    from google import genai
     _GENAI_AVAILABLE = True
 except ImportError:
     _GENAI_AVAILABLE = False

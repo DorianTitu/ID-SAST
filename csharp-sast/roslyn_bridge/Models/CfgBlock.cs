@@ -1,26 +1,6 @@
 // =============================================================================
 //  csharp-sast / roslyn_bridge / Models / CfgBlock.cs
-// =============================================================================
-//
-//  MODELO INTERNO DE BLOQUE Y GRAFO CFG
-//  ──────────────────────────────────────
-//  Complementa ExportSchema.cs con:
-//    • Representación mutable interna del CFG durante la construcción
-//    • Grafo navegable de bloques (para CfgExtractor y DfgExtractor)
-//    • Algoritmos de recorrido: DFS, dominancia, detección de loops
-//    • Helpers para el análisis de alcanzabilidad de bloques (taint reachability)
-//
-//  POR QUÉ EXISTE ESTE ARCHIVO:
-//    Los records de ExportSchema son inmutables y están optimizados para JSON.
-//    Durante la construcción del CFG necesitamos una estructura mutable
-//    y navegable (con referencias entre bloques) que luego se convierte
-//    al schema de exportación.
-//
-//  RELACIÓN CON EL ENGINE PYTHON:
-//    CfgExtractor.cs convierte CfgGraph → ControlFlowExport (schema).
-//    El engine Python recibe el schema y reconstruye su propio grafo
-//    con NetworkX en cfg_builder.py.
-//
+//  CORRECCIÓN: Error CS1739 — CfgNode constructor con parámetros posicionales
 // =============================================================================
 
 using RoslynBridge.Models;
@@ -41,8 +21,8 @@ public sealed class CfgGraph
     private readonly Dictionary<string, CfgNode> _nodes = [];
     private readonly List<CfgEdge> _edges              = [];
 
-    public string MethodId   { get; }
-    public string MethodName { get; }
+    public string MethodId     { get; }
+    public string MethodName   { get; }
     public string? EntryNodeId { get; private set; }
     public IReadOnlyList<string> ExitNodeIds => _exitNodeIds;
     private readonly List<string> _exitNodeIds = [];
@@ -67,14 +47,20 @@ public sealed class CfgGraph
         string? branchCondition = null,
         bool isExceptionHandler = false)
     {
+        // ─────────────────────────────────────────────────────────────────────
+        // FIX Error CS1739:
+        // CfgNode es una sealed class con constructor que recibe parámetros
+        // posicionales. Los named parameters de record no aplican aquí.
+        // Se pasan los argumentos en el orden correcto del constructor.
+        // ─────────────────────────────────────────────────────────────────────
         var node = new CfgNode(
-            BlockId:            blockId,
-            Kind:               kind,
-            LineStart:          lineStart,
-            LineEnd:            lineEnd,
-            SemanticNodeIds:    nodeIds,
-            BranchCondition:    branchCondition,
-            IsExceptionHandler: isExceptionHandler
+            blockId,
+            kind,
+            lineStart,
+            lineEnd,
+            nodeIds,
+            branchCondition,
+            isExceptionHandler
         );
 
         _nodes[blockId] = node;
@@ -162,8 +148,6 @@ public sealed class CfgGraph
     /// <summary>
     /// Determina si el bloque <paramref name="targetId"/> es alcanzable
     /// desde el bloque <paramref name="sourceId"/>.
-    /// Usado por el taint analyzer para verificar si un sink es alcanzable
-    /// desde una source en el mismo método.
     /// </summary>
     public bool IsReachable(string sourceId, string targetId)
     {
@@ -190,7 +174,6 @@ public sealed class CfgGraph
     /// <summary>
     /// Encuentra todos los bloques en el camino desde source hasta target.
     /// Retorna null si no hay camino.
-    /// Usado para generar el trace de vulnerabilidades en los reportes.
     /// </summary>
     public IReadOnlyList<string>? FindPath(string sourceId, string targetId)
     {
@@ -226,8 +209,6 @@ public sealed class CfgGraph
 
     /// <summary>
     /// Detecta bloques dentro de ciclos (while, for, foreach, do-while).
-    /// Los bucles son importantes para el taint analysis porque una variable
-    /// tainted dentro de un loop puede llegar a un sink en iteraciones futuras.
     /// </summary>
     public HashSet<string> DetectLoopBlocks()
     {
@@ -246,8 +227,6 @@ public sealed class CfgGraph
                 {
                     if (inStack.Contains(successorId))
                     {
-                        // Back edge detectada → hay un ciclo
-                        // Marcar todos los nodos entre el sucesor y el actual
                         MarkLoopBody(successorId, nodeId, loopBlocks);
                     }
                     else if (!visited.Contains(successorId))
@@ -270,7 +249,6 @@ public sealed class CfgGraph
     {
         loopBlocks.Add(headerNodeId);
 
-        // BFS inverso desde el nodo back edge hasta el header
         var visited = new HashSet<string>();
         var queue   = new Queue<string>();
         queue.Enqueue(backEdgeNodeId);
@@ -291,10 +269,6 @@ public sealed class CfgGraph
 
     // ── Conversión a ExportSchema ─────────────────────────────────────────────
 
-    /// <summary>
-    /// Convierte este grafo interno a los records del ExportSchema.
-    /// Llamado por CfgExtractor al finalizar la construcción del grafo.
-    /// </summary>
     public MethodCfgExport ToExport() => new(
         MethodId:     MethodId,
         MethodName:   MethodName,
@@ -323,11 +297,6 @@ public sealed class CfgGraph
 //  NODO DEL CFG INTERNO (MUTABLE)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// <summary>
-/// Nodo mutable del CFG interno del bridge.
-/// Mantiene referencias bidireccionales (sucesores y predecesores)
-/// para permitir algoritmos de dominancia y BFS inverso.
-/// </summary>
 public sealed class CfgNode
 {
     public string BlockId              { get; }
@@ -338,24 +307,13 @@ public sealed class CfgNode
     public string? BranchCondition    { get; }
     public bool IsExceptionHandler    { get; }
 
-    /// <summary>BlockId → CfgEdgeKind de la arista hacia el sucesor.</summary>
     public Dictionary<string, CfgEdgeKind> Successors   { get; } = [];
-
-    /// <summary>BlockIds de los predecesores directos.</summary>
     public HashSet<string> Predecessors { get; } = [];
 
-    /// <summary>
-    /// true si este bloque está dentro de un ciclo detectado.
-    /// Marcado por CfgGraph.DetectLoopBlocks().
-    /// </summary>
-    public bool IsInLoop { get; set; }
-
-    /// <summary>
-    /// true si este bloque es alcanzable desde el entry block.
-    /// Los bloques no alcanzables (dead code) se excluyen del taint analysis.
-    /// </summary>
+    public bool IsInLoop    { get; set; }
     public bool IsReachable { get; set; } = true;
 
+    // Constructor posicional — los parámetros van EN ORDEN, sin nombres de record
     internal CfgNode(
         string blockId,
         CfgBlockKind kind,
@@ -380,26 +338,18 @@ public sealed class CfgNode
     internal void AddPredecessor(string blockId) =>
         Predecessors.Add(blockId);
 
-    /// <summary>
-    /// true si alguno de sus sucesores llega al bloque target.
-    /// </summary>
     public bool HasSuccessor(string targetBlockId) =>
         Successors.ContainsKey(targetBlockId);
 
-    /// <summary>
-    /// Tipos de aristas que salen de este bloque.
-    /// </summary>
     public IEnumerable<CfgEdgeKind> OutgoingEdgeKinds =>
         Successors.Values;
 
-    /// <summary>
-    /// true si este bloque tiene una rama condicional (true/false branch).
-    /// </summary>
     public bool IsConditional =>
         Successors.Values.Any(k => k is CfgEdgeKind.TrueBranch or CfgEdgeKind.FalseBranch);
 
     public override string ToString() =>
-        $"CfgNode({Kind}:{BlockId[..8]}… L{LineStart}-{LineEnd}, " +
+        $"CfgNode({Kind}:{BlockId[..Math.Min(8, BlockId.Length)]}… " +
+        $"L{LineStart}-{LineEnd}, " +
         $"{SemanticNodeIds.Count} nodes, {Successors.Count} successors)";
 }
 
@@ -407,47 +357,30 @@ public sealed class CfgNode
 //  ARISTA DEL CFG INTERNO
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// <summary>
-/// Arista del CFG interno del bridge.
-/// Inmutable — una vez creada no cambia.
-/// </summary>
 public sealed record CfgEdge(
     string FromId,
     string ToId,
     CfgEdgeKind Kind
 )
 {
-    /// <summary>
-    /// true si esta arista representa flujo de excepción.
-    /// Las aristas de excepción son relevantes para analizar si
-    /// un sanitizador en un catch bloquea el flujo taint.
-    /// </summary>
     public bool IsExceptionEdge =>
         Kind is CfgEdgeKind.Exception or CfgEdgeKind.Throw;
 
-    /// <summary>
-    /// true si esta arista es una rama de una condición.
-    /// </summary>
     public bool IsConditionalEdge =>
         Kind is CfgEdgeKind.TrueBranch or CfgEdgeKind.FalseBranch;
 
     public override string ToString() =>
-        $"CfgEdge({FromId[..8]}… →[{Kind}]→ {ToId[..8]}…)";
+        $"CfgEdge({FromId[..Math.Min(8, FromId.Length)]}… " +
+        $"→[{Kind}]→ " +
+        $"{ToId[..Math.Min(8, ToId.Length)]}…)";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  HELPERS DE ANÁLISIS DE BLOQUES
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// <summary>
-/// Extensiones de análisis sobre CfgNode para el taint analysis del bridge.
-/// </summary>
 public static class CfgNodeExtensions
 {
-    /// <summary>
-    /// true si el bloque contiene nodos semánticos de tipo sink conocido.
-    /// Permite al DfgExtractor priorizar la propagación de taint.
-    /// </summary>
     public static bool ContainsSink(this CfgNode block, IReadOnlyList<SemanticNode> allNodes)
     {
         var blockNodeIds = block.SemanticNodeIds.ToHashSet();
@@ -455,10 +388,6 @@ public static class CfgNodeExtensions
             blockNodeIds.Contains(n.NodeId) && n.IsKnownSink());
     }
 
-    /// <summary>
-    /// true si el bloque contiene nodos semánticos de tipo sanitizador.
-    /// Un sanitizador en el camino source→sink puede interrumpir el flujo taint.
-    /// </summary>
     public static bool ContainsSanitizer(this CfgNode block, IReadOnlyList<SemanticNode> allNodes)
     {
         var blockNodeIds = block.SemanticNodeIds.ToHashSet();
@@ -466,9 +395,6 @@ public static class CfgNodeExtensions
             blockNodeIds.Contains(n.NodeId) && n.IsKnownSanitizer());
     }
 
-    /// <summary>
-    /// true si el bloque está dentro de un manejador de excepciones.
-    /// </summary>
     public static bool IsInExceptionHandler(this CfgNode block) =>
         block.IsExceptionHandler;
 }

@@ -69,19 +69,7 @@ namespace RoslynBridge.Serializers;
 [JsonSerializable(typeof(AnalysisRequest))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(SerializationStats))]
-[JsonSourceGenerationOptions(
-    // snake_case para compatibilidad Python (las propiedades tienen [JsonPropertyName])
-    PropertyNamingPolicy        = JsonKnownNamingPolicy.SnakeCaseLower,
-    // Omitir nulls para reducir tamaño del JSON
-    DefaultIgnoreCondition      = JsonIgnoreCondition.WhenWritingNull,
-    // Permitir trailing commas y comentarios en el input (más robusto)
-    ReadCommentHandling         = JsonCommentHandling.Skip,
-    AllowTrailingCommas         = true,
-    // NO escribir con indentado por defecto → configurado en AstJsonSerializer
-    WriteIndented               = false,
-    // Manejar números de referencia (evita stackoverflow en grafos circulares)
-    ReferenceHandler            = JsonKnownReferenceHandler.IgnoreCycles
-)]
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true, WriteIndented = false)]
 internal partial class RoslynBridgeJsonContext : JsonSerializerContext { }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,7 +334,7 @@ public sealed class AstJsonSerializer
         {
             WriteIndented           = writeIndented,
             DefaultIgnoreCondition  = JsonIgnoreCondition.WhenWritingNull,
-            PropertyNamingPolicy    = JsonNamingPolicy.SnakeCaseLower,
+            PropertyNamingPolicy    = new JsonSnakeCaseNamingPolicy(),
             AllowTrailingCommas     = true,
             ReadCommentHandling     = JsonCommentHandling.Skip,
             // Evitar referencias circulares (el CFG puede tener ciclos internos)
@@ -359,6 +347,36 @@ public sealed class AstJsonSerializer
 // ─────────────────────────────────────────────────────────────────────────────
 //  MODELOS AUXILIARES DEL SERIALIZADOR
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Naming policy para convertir nombres a snake_case (ej: MyProperty -> my_property).
+/// Implementación simple y suficiente para serializar a JSON compatible con Python.
+/// </summary>
+internal sealed class JsonSnakeCaseNamingPolicy : JsonNamingPolicy
+{
+    public override string ConvertName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+
+        var sb = new StringBuilder();
+        for (int i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                // prepend underscore if not first and previous is not underscore
+                if (i > 0 && name[i - 1] != '_') sb.Append('_');
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+}
 
 /// <summary>
 /// Opciones de configuración del serializador.

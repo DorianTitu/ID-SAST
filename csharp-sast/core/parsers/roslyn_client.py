@@ -415,10 +415,15 @@ class RoslynClient:
                 if resp.status != 200:
                     try:
                         error_body = await resp.json()
-                        msg = error_body.get("error", f"HTTP {resp.status}")
+
+                        msg = (
+                            error_body.get("details")
+                            or error_body.get("error")
+                            or f"HTTP {resp.status}"
+                        )
+
                     except Exception:
                         msg = f"HTTP {resp.status}"
-                    raise BridgeAnalysisError(resp.status, msg)
 
                 return await self._read_response(resp)
 

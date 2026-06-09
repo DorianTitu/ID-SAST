@@ -37,6 +37,9 @@ reports/output/
 .pytest_cache/
 .coverage
 htmlcov/
+bin/
+obj/
+publish/
 
 # MYPY
 .mypy_cache/
